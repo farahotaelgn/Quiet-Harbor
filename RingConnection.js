@@ -25,6 +25,8 @@ export class RingConnection extends EventTarget {
     this.wakeLockState = 'off'; // off | on | unsupported
     this.resumeCount = 0;
     this.emptyFiles = new Set(); // 1.6.2: nights the ring reports as 0 bytes (usually the one it is recording now)
+    this.notice = null; // 1.6.4: 'off' | 'empty' | null
+    this.available = null; // 1.6.4: true | false | null (browser can't say)
     this.notifyCharacteristic = null;
     this.onNotify = (event) => {
       const v = event.target.value;
@@ -38,6 +40,25 @@ export class RingConnection extends EventTarget {
   }
 
   static get isSupported() { return 'bluetooth' in navigator; }
+
+  // 1.6.4: why no ring came back from the device list
+  //   'off'   = Bluetooth is off, or iOS doesn't let this browser use it
+  //   'empty' = the list was closed or found no ring (asleep, or held by another app)
+  static noticeFor(error) {
+    const text = `${error?.name ?? ''} ${error?.message ?? ''}`;
+    if (/adapter|not available|unavailable|powered|turned off|unauthori[sz]ed|permission|denied|not allowed/i.test(text)) return 'off';
+    if (error?.name === 'NotFoundError' || /cancel/i.test(text)) return 'empty';
+    return 'other';
+  }
+
+  // 1.6.4: asks the browser once whether Bluetooth can be used (not every browser can say)
+  async watchAvailability() {
+    const bt = navigator.bluetooth;
+    if (!bt?.getAvailability) return;
+    const apply = (ok) => { this.available = ok; if (ok && this.notice === 'off') this.notice = null; this.#changed(); };
+    try { apply(await bt.getAvailability()); } catch { return; }
+    try { bt.addEventListener('availabilitychanged', (e) => apply(e.value)); } catch { /* no live updates: the next Connect tells */ }
+  }
 
   get name() { return this.device?.name ?? 'ring'; }
 
@@ -63,10 +84,14 @@ export class RingConnection extends EventTarget {
       ? { acceptAllDevices: true, optionalServices: [RING.service] }
       : { filters: RingConnection.filters(), optionalServices: [RING.service] };
     this.pickedFromAll = showAllDevices;
+    this.notice = null;
     try {
       this.device = await navigator.bluetooth.requestDevice(options);
     } catch (error) {
-      if (error.name !== 'NotFoundError') this.#fail(error.message); // NotFoundError = chooser cancelled
+      // 1.6.4: "not found" is also what Bluefy answers when Bluetooth is off or not allowed; that was silent before
+      this.notice = RingConnection.noticeFor(error);
+      if (this.notice === 'other') { this.notice = null; this.#fail(error.message); }
+      else this.#changed();
       return;
     }
     this.device.addEventListener('gattserverdisconnected', () => this.#reset('disconnected'));
@@ -92,6 +117,7 @@ export class RingConnection extends EventTarget {
       await notify.startNotifications();
       this.state = 'ready';
       this.lastError = null;
+      this.notice = null;
       if (this.pickedFromAll) RingConnection.rememberName(this.device?.name);   // it offers the ring service: remember it
       this.#process(this.client.start());
       this.#updateLiveTimer();

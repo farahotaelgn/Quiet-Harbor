@@ -6,7 +6,7 @@ import { FORMATS, canExport, csv, exportFile, fileName, importFile } from './Cor
 import { zip } from './Core/Zip.js';
 import { BRAND } from './Brand.js';
 
-export const VERSION = '1.6.3';
+export const VERSION = '1.6.4';
 const BLUEFY_URL = 'https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055';
 const DISCLAIMER = `${BRAND.name} is a wellness tool, not a medical device. Discuss your results with a clinician.`;
 
@@ -107,6 +107,7 @@ function deviceView() {
     <h2>Ring</h2>
     <div class="row"><span>Status</span><span>${status}</span></div>
     ${ring.lastError ? `<p class="error">${esc(ring.lastError)}</p>` : ''}
+    ${ring.state === 'disconnected' ? noticeHtml() : ''}
     <div class="buttons">${ring.state === 'disconnected'
       ? `<button data-action="connect">Connect ring</button><button class="secondary" data-action="connect-all">Show all devices</button>`
       : `<button class="danger" data-action="disconnect">Disconnect</button>`}</div>
@@ -139,6 +140,22 @@ function deviceView() {
     </section>`;
   }
   return html;
+}
+
+// 1.6.4: says why no ring showed up, instead of closing the list silently
+function noticeHtml() {
+  if (ring.notice === 'off' || ring.available === false) {
+    return `<div class="error"><p><b>Bluetooth can't be used.</b> Bluetooth is off, or iOS doesn't let Bluefy use it.</p>
+      <p>On the iPhone: Settings › Bluefy › turn on Bluetooth. Then Control Center › Bluetooth on (blue). Come back and tap Connect ring.</p></div>`;
+  }
+  if (ring.notice === 'empty') {
+    return `<div class="note"><p><b>No ring was chosen.</b> If the list was empty:</p>
+      <p>1. Close Oxi Converter and ViHealth completely (swipe them away). A ring linked to another app doesn't show up.</p>
+      <p>2. Wear the ring for 30 seconds so its screen wakes.</p>
+      <p>3. Tap Show all devices.</p>
+      <p>4. Still nothing: close Bluefy completely, open it again, then try again.</p></div>`;
+  }
+  return '';
 }
 
 function liveView() {
@@ -422,6 +439,7 @@ ring.addEventListener('change', () => {
 });
 document.getElementById('lockButton').addEventListener('click', () => lock());
 
+ring.watchAvailability();
 render();
 await store.open();
 ui.ready = true;

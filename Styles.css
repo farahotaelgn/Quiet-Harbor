@@ -134,3 +134,4 @@ input[type="password"] {
   button { transition: transform .1s ease; }
   button:active { transform: scale(.97); }
 }
+.note p, .error p { margin: 6px 0; }

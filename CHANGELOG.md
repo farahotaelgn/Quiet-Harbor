@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.4 — 2026-10-27 · Says why no ring shows up
+- 🛠 Fixed: when Bluetooth was off, or iOS didn't let Bluefy use it, tapping Connect ring did nothing at all. The Device screen now says **Bluetooth can't be used** and how to turn it on (Settings › Bluefy › Bluetooth, then Control Center).
+- 🛠 Fixed: an empty or closed device list now shows short steps (close Oxi Converter and ViHealth, wear the ring, Show all devices, reopen Bluefy) instead of nothing.
+- ✨ New: when the page opens it asks the browser whether Bluetooth can be used, and shows the note before you tap.
+- Kept: Connect ring, Show all devices and the saved ring name work as before.
+
+**🔧 Behind the scenes:** `requestDevice` answers `NotFoundError` both when the list is cancelled and when there is no Bluetooth adapter ("Bluetooth adapter not available", proven in real Chromium); 1.6.0–1.6.3 treated every `NotFoundError` as a cancel and showed nothing. `RingConnection.noticeFor(error)` now sorts it into `off` (adapter / not available / permission / denied / not allowed) or `empty` (cancel / other not-found); any other error still shows its own text. `watchAvailability()` uses `navigator.bluetooth.getAvailability()` + `availabilitychanged` when the browser has them (guarded; the note then comes from Connect). The filters were checked in real Chromium: valid, no TypeError. Proof: 8 checks on the real page in Chromium (no adapter, Show all devices, cancelled list, unavailable at open, permission denied, other error) + a pretend ring: note after an empty list, connects on the next try, note cleared, no JS errors. Only the iPhone can confirm Bluefy's exact error words and whether it supports getAvailability.
+
 ## 1.6.3 — 2026-10-27 · No night is read twice
 - 🛠 Fixed: a night already in History is never read from the ring again, even when it came in another way (a .dat or .spo2 you imported by hand, under a different name). It counts as **Already read**, not **New**, and Download skips it.
 - 🛠 Fixed: if a night still comes in and History already has one with the same start time and the same length, it is not saved a second time.
