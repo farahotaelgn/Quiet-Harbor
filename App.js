@@ -6,7 +6,7 @@ import { FORMATS, canExport, csv, exportFile, fileName, importFile } from './Cor
 import { zip } from './Core/Zip.js';
 import { BRAND } from './Brand.js';
 
-export const VERSION = '1.6.2';
+export const VERSION = '1.6.3';
 const BLUEFY_URL = 'https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055';
 const DISCLAIMER = `${BRAND.name} is a wellness tool, not a medical device. Discuss your results with a clinician.`;
 
@@ -363,6 +363,7 @@ ring.addEventListener('file', async ({ detail }) => {
   try {
     const { session } = importFile(detail.data, `${detail.name}.dat`);
     session.deviceName = detail.ringName;
+    if (store.hasSameNight(session)) { await store.markRead(detail.name); return; } // 1.6.3: already in History
     await store.add(session);
     await store.markRead(detail.name);
   } catch (error) {

@@ -1,5 +1,6 @@
 import { BRAND } from './Brand.js';
 import { createVault, openVault, seal, unseal } from './Core/Vault.js';
+import { duration } from './Core/Session.js';
 
 const DB_NAME = BRAND.storageName;
 const SESSIONS = 'sessions';
@@ -101,7 +102,19 @@ export class SessionStore extends EventTarget {
 
   find(id) { return this.sessions.find((s) => s.id === id); }
   hasRingFile(name) {
-    return this.readFiles.has(name) || this.sessions.some((s) => s.sourceFileName === `${name}.dat`);
+    return this.readFiles.has(name) || this.sessions.some((s) => s.sourceFileName === `${name}.dat`)
+      || this.hasNightAt(ringNameTime(name)); // 1.6.3: the same night already in History under another name
+  }
+
+  // 1.6.3: a night in History that starts in the same second (the ring only tells the start time before reading)
+  hasNightAt(ms) {
+    if (ms == null) return false;
+    return this.sessions.some((s) => Math.abs(s.startDate - ms) < 1000);
+  }
+
+  // 1.6.3: a night in History with the same start second and the same length
+  hasSameNight(session) {
+    return this.sessions.some((s) => Math.abs(s.startDate - session.startDate) < 1000 && duration(s) === duration(session));
   }
 
   async markRead(name) {
@@ -144,4 +157,11 @@ export class SessionStore extends EventTarget {
 
   #sort() { this.sessions.sort((a, b) => b.startDate - a.startDate); }
   #changed() { this.dispatchEvent(new Event('change')); }
+}
+
+// 1.6.3: a ring file name is its start time, yyyyMMddHHmmss in the ring's local time
+export function ringNameTime(name) {
+  const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(String(name ?? ''));
+  if (!m) return null;
+  return new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
 }

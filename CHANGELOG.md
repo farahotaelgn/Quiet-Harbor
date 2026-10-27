@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.3 — 2026-10-27 · No night is read twice
+- 🛠 Fixed: a night already in History is never read from the ring again, even when it came in another way (a .dat or .spo2 you imported by hand, under a different name). It counts as **Already read**, not **New**, and Download skips it.
+- 🛠 Fixed: if a night still comes in and History already has one with the same start time and the same length, it is not saved a second time.
+- Kept: **Allow deleted sessions to download again** still brings back only the nights you deleted from History.
+
+**🔧 Behind the scenes:** before reading, the ring only gives each night's name, which is its start time (yyyyMMddHHmmss, local). `Store.hasRingFile` now also asks `hasNightAt(ringNameTime(name))` (a History night starting in the same second), so the New / Already read / Download lists and the file handler all skip it. After reading, `App.js` checks `store.hasSameNight(session)` (same start second + same length) and only marks the name read. Proof: 9 direct checks (imported night skipped, 1 s later still read, same start + other length still saved, deleted night back only after Allow re-download), the ring stand-in 19/19 fifteen runs in a row (two timing races in the test itself fixed: the pause and the dropped link now happen the moment the first night lands), and the real page in Chromium with a .spo2 imported first: Already read 1 before connecting, 2 downloaded instead of 3, no errors. Only the iPhone can confirm it with the real WearO2 in Bluefy.
+
 ## 1.6.2 — 2026-10-27 · Empty nights shown, ring found by name
 - 🛠 Fixed: a night the ring reports as empty (0 bytes, usually the night it is recording now) was skipped without a word and kept counting as "New". The Device screen now shows **Empty on the ring** with a short note, and New / Download / Already read count only nights with data.
 - ✨ New: **Refresh** checks the empty nights again and downloads them once they have data.
