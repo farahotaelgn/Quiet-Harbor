@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.5 — 2026-10-27 · Ring that stays hidden
+- 🛠 Fixed: when the page closed or reloaded while the ring was connected, Bluefy could keep a hidden link to it, and a ring with a link stops showing up in any search. The page now lets go of the ring when it closes. Switching apps still pauses and carries on as before.
+- ✨ New: **Reconnect my ring** (only in browsers that can do it) connects to a ring you picked before without searching for it. If none is remembered it says so.
+- 🛠 Clearer steps when the device list is empty: turn Bluetooth off for ViHealth and Oxi Converter in iPhone Settings (closing them is not enough), reopen Bluefy, wake the ring, then Show all devices.
+- Kept: Connect ring, Show all devices, the saved ring name and the 1.6.4 notes.
+
+**🔧 Behind the scenes:** owner (Bluefy, Bluetooth on, other devices listed, ring missing) → the ring isn't advertising: asleep or held by a connection on the phone. `pagehide` now calls `device.gatt.disconnect()` (not `disconnect()`, so the nights still wanted survive a back-forward return). `reconnect()` uses `navigator.bluetooth.getDevices()` when it exists (guarded by `RingConnection.canReconnect`), picks a saved/known ring name or the only device, and opens GATT without the chooser; `notice: 'none'` when nothing is remembered. One `gattserverdisconnected` listener per device (`#useDevice`). Proof: 10 checks on the real page in Chromium with a pretend ring (button only when supported, reconnect connects, page close releases the ring, nothing remembered note, empty-list steps, normal Connect, one listener after Disconnect → Reconnect, no JS errors) + the 1.6.4 checks again (12). Only the iPhone can show whether Bluefy has getDevices and whether the ring was held by another link.
+
 ## 1.6.4 — 2026-10-27 · Says why no ring shows up
 - 🛠 Fixed: when Bluetooth was off, or iOS didn't let Bluefy use it, tapping Connect ring did nothing at all. The Device screen now says **Bluetooth can't be used** and how to turn it on (Settings › Bluefy › Bluetooth, then Control Center).
 - 🛠 Fixed: an empty or closed device list now shows short steps (close Oxi Converter and ViHealth, wear the ring, Show all devices, reopen Bluefy) instead of nothing.

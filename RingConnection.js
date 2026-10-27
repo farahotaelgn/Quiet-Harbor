@@ -25,7 +25,7 @@ export class RingConnection extends EventTarget {
     this.wakeLockState = 'off'; // off | on | unsupported
     this.resumeCount = 0;
     this.emptyFiles = new Set(); // 1.6.2: nights the ring reports as 0 bytes (usually the one it is recording now)
-    this.notice = null; // 1.6.4: 'off' | 'empty' | null
+    this.notice = null; // 1.6.4: 'off' | 'empty' | null · 1.6.5: 'none' (no ring remembered)
     this.available = null; // 1.6.4: true | false | null (browser can't say)
     this.notifyCharacteristic = null;
     this.onNotify = (event) => {
@@ -37,6 +37,12 @@ export class RingConnection extends EventTarget {
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') this.#resumeAfterPause();
     });
+    // 1.6.5: let go of the ring when the page closes or reloads, so a hidden link in this
+    // browser can't stop the ring from showing up in the next search (switching apps is visibilitychange, not this)
+    window.addEventListener('pagehide', () => {
+      try { if (this.device?.gatt?.connected) this.device.gatt.disconnect(); } catch { /* already gone */ }
+    });
+    this.onDisconnected = () => this.#reset('disconnected');
   }
 
   static get isSupported() { return 'bluetooth' in navigator; }
@@ -94,8 +100,32 @@ export class RingConnection extends EventTarget {
       else this.#changed();
       return;
     }
-    this.device.addEventListener('gattserverdisconnected', () => this.#reset('disconnected'));
+    this.#useDevice(this.device);
     await this.#openGatt();
+  }
+
+  // 1.6.5: the browser can hand back a ring picked before (no scan needed). Only some browsers can.
+  static get canReconnect() { return typeof navigator.bluetooth?.getDevices === 'function'; }
+
+  async reconnect() {
+    this.lastError = null;
+    this.notice = null;
+    let devices = [];
+    try { devices = await navigator.bluetooth.getDevices(); } catch (error) { this.notice = RingConnection.noticeFor(error) === 'off' ? 'off' : 'none'; this.#changed(); return; }
+    const saved = RingConnection.savedNames();
+    const named = (d) => d?.name && (saved.includes(d.name) || RING.namePatterns.some((p) => d.name.startsWith(p)));
+    const device = devices.find(named) ?? (devices.length === 1 ? devices[0] : null);
+    if (!device) { this.notice = 'none'; this.#changed(); return; }
+    this.pickedFromAll = false;
+    this.#useDevice(device);
+    await this.#openGatt();
+  }
+
+  #useDevice(device) {
+    if (this.listenedDevice && this.listenedDevice !== device) this.listenedDevice.removeEventListener('gattserverdisconnected', this.onDisconnected);
+    if (this.listenedDevice !== device) device.addEventListener('gattserverdisconnected', this.onDisconnected);
+    this.listenedDevice = device;
+    this.device = device;
   }
 
   async #openGatt() {

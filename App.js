@@ -6,7 +6,7 @@ import { FORMATS, canExport, csv, exportFile, fileName, importFile } from './Cor
 import { zip } from './Core/Zip.js';
 import { BRAND } from './Brand.js';
 
-export const VERSION = '1.6.4';
+export const VERSION = '1.6.5';
 const BLUEFY_URL = 'https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055';
 const DISCLAIMER = `${BRAND.name} is a wellness tool, not a medical device. Discuss your results with a clinician.`;
 
@@ -109,7 +109,7 @@ function deviceView() {
     ${ring.lastError ? `<p class="error">${esc(ring.lastError)}</p>` : ''}
     ${ring.state === 'disconnected' ? noticeHtml() : ''}
     <div class="buttons">${ring.state === 'disconnected'
-      ? `<button data-action="connect">Connect ring</button><button class="secondary" data-action="connect-all">Show all devices</button>`
+      ? `<button data-action="connect">Connect ring</button><button class="secondary" data-action="connect-all">Show all devices</button>${RingConnection.canReconnect ? '<button class="secondary" data-action="reconnect">Reconnect my ring</button>' : ''}`
       : `<button class="danger" data-action="disconnect">Disconnect</button>`}</div>
     ${ring.state === 'disconnected' ? '<p class="note">Wear the ring so it wakes up, then tap Connect and choose it in the list.</p>' : ''}
     ${ring.isDownloading && ring.state === 'disconnected' ? `<p class="note">${ring.wanted.size} night${ring.wanted.size === 1 ? '' : 's'} still to download. They carry on as soon as the ring is connected.</p>` : ''}
@@ -149,11 +149,17 @@ function noticeHtml() {
       <p>On the iPhone: Settings › Bluefy › turn on Bluetooth. Then Control Center › Bluetooth on (blue). Come back and tap Connect ring.</p></div>`;
   }
   if (ring.notice === 'empty') {
-    return `<div class="note"><p><b>No ring was chosen.</b> If the list was empty:</p>
-      <p>1. Close Oxi Converter and ViHealth completely (swipe them away). A ring linked to another app doesn't show up.</p>
-      <p>2. Wear the ring for 30 seconds so its screen wakes.</p>
-      <p>3. Tap Show all devices.</p>
-      <p>4. Still nothing: close Bluefy completely, open it again, then try again.</p></div>`;
+    return `<div class="note"><p><b>No ring was chosen.</b> If the list was empty, the ring is asleep or still linked to another app:</p>
+      <p>1. iPhone Settings › ViHealth › turn Bluetooth off.</p>
+      <p>2. iPhone Settings › Oxi Converter › turn Bluetooth off. Closing those apps is not enough.</p>
+      <p>3. Swipe Bluefy away, then open it again.</p>
+      <p>4. Wear the ring and press its button so the screen wakes.</p>
+      <p>5. Tap Show all devices.</p>
+      ${RingConnection.canReconnect ? '<p>Or tap Reconnect my ring: it finds a ring you picked before without searching.</p>' : ''}
+      <p class="note">You can turn Bluetooth back on for those apps afterwards.</p></div>`;
+  }
+  if (ring.notice === 'none') {
+    return `<div class="note"><p><b>No ring remembered yet.</b> Tap Show all devices and choose your ring once; after that Reconnect my ring finds it.</p></div>`;
   }
   return '';
 }
@@ -319,6 +325,7 @@ function formatPicker() {
 const actions = {
   connect: () => ring.connect(false),
   'connect-all': () => ring.connect(true),
+  reconnect: () => ring.reconnect(),
   disconnect: () => ring.disconnect(),
   refresh: () => ring.refresh(),
   download: () => ring.downloadFiles((ring.ringInfo?.fileNames ?? []).filter((f) => !store.hasRingFile(f) && !ring.emptyFiles.has(f))),
