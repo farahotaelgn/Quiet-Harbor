@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.6.6 — 2026-10-27 · .spo2 that OSCAR opens
+- 🛠 Fixed: **.spo2** files opened empty in OSCAR. Quiet Harbor's .spo2 was its own backup format (it starts with "FHS2"), which OSCAR can't read. **.spo2 (OSCAR)** now saves the layout OSCAR reads (Data › Oximetry Wizard › import a file), the same as the Oxi Converter's .spo2.
+- ✨ New: **Harbor backup (.spo2, opens only in Quiet Harbor)** keeps the old format as its own choice, saved as "…-backup.spo2". Every backup you saved before still opens.
+- ✨ New: importing an OSCAR .spo2 (from Quiet Harbor or the Oxi Converter) now works too.
+- 🛠 Fixed: a ring file Quiet Harbor can't chart now keeps the night's start time as its name instead of the download time.
+- Kept: .dat (OSCAR), .bin and CSV unchanged. .dat goes into OSCAR with Data › Import Viatom/Wellue Data.
+
+**🔧 Behind the scenes:** the owner sent 3 files (Harbor-2026-10-26-0202, -10-27-0131, -10-26-1421). All were FHS2 backups holding normal WearO2 ring data (sig 0x0003, 4 s, 3961 / 16 / 5 readings). OSCAR's `CMS50Loader::readSpoRFile` reads bytes 0–1 as the header position ("FH" = 18502, past the end of the file), so it found no readings. New `OscarSpo2File` in `Core/Formats.js` writes u16 856 · byte 856 = 1 · "BLE" at 864 · local start at 1056 (6 × u32) · seconds at 1080 · SpO₂/pulse pairs from 1084, with each 4 s reading spread over 4 seconds and 0x7F/0xFF for no reading. That is byte-identical to the Oxi Converter's `buildBytes` on the owner's night. `decode` reads it back the way OSCAR does (2- or 4-byte records), turning 4 equal seconds back into a 4 s reading. `importFile` picks backup by the FHS2 magic, otherwise OSCAR .spo2; the backup format keeps an imported OSCAR file's bytes as raw code 3. The ring `file` handler passes `ringNameTime(name)` as the start time for a layout it can't chart. Proof: 35 checks on the owner's 3 files under New York time (a line-by-line copy of readSpoRFile: 15,844 / 64 / 20 seconds, start = the night's start, every second = the ring reading, avg SpO₂ 97.1; round trip; byte-for-byte re-export; backups open; 1 s data; errors refused; .bin and demo unchanged). On the real page in Chromium: the 3 files import, the new choices show, the export zip holds 9 files, and the browser's own .spo2 and .dat pass the OSCAR checks with no JS errors. The 1.6.4 and 1.6.5 page checks were run again: 22 ✅. Only OSCAR on the Mac can confirm the final import.
+
 ## 1.6.5 — 2026-10-27 · Ring that stays hidden
 - 🛠 Fixed: when the page closed or reloaded while the ring was connected, Bluefy could keep a hidden link to it, and a ring with a link stops showing up in any search. The page now lets go of the ring when it closes. Switching apps still pauses and carries on as before.
 - ✨ New: **Reconnect my ring** (only in browsers that can do it) connects to a ring you picked before without searching for it. If none is remembered it says so.

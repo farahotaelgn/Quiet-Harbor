@@ -1,4 +1,4 @@
-import { SessionStore } from './Store.js';
+import { SessionStore, ringNameTime } from './Store.js';
 import { RingConnection } from './RingConnection.js';
 import { demoSession, duration, isRawOnly } from './Core/Session.js';
 import { report } from './Core/Report.js';
@@ -6,7 +6,7 @@ import { FORMATS, canExport, csv, exportFile, fileName, importFile } from './Cor
 import { zip } from './Core/Zip.js';
 import { BRAND } from './Brand.js';
 
-export const VERSION = '1.6.5';
+export const VERSION = '1.6.6';
 const BLUEFY_URL = 'https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055';
 const DISCLAIMER = `${BRAND.name} is a wellness tool, not a medical device. Discuss your results with a clinician.`;
 
@@ -15,7 +15,8 @@ const ring = new RingConnection();
 const AUTO_LOCK_AFTER = 5 * 60_000;
 const EXPORT_CHOICES = [
   { id: 'dat', label: '.dat (OSCAR)' },
-  { id: 'spo2', label: '.spo2' },
+  { id: 'spo2', label: '.spo2 (OSCAR)' },
+  { id: 'backup', label: 'Harbor backup (.spo2, opens only in Quiet Harbor)' },
   { id: 'bin', label: '.bin' },
   { id: 'csv', label: 'CSV' },
 ];
@@ -311,7 +312,8 @@ async function exportSessions(sessions) {
   try {
     await saveFiles(files, `${BRAND.filePrefix}-${stamp}.zip`);
     toast(`${files.length} file${files.length === 1 ? '' : 's'} ready${skipped ? ` (${skipped} skipped)` : ''}.`
-      + (formats.includes('dat') ? ' For OSCAR: Data › Import Viatom/Wellue Data.' : ''));
+      + (formats.includes('dat') ? ' For OSCAR: Data › Import Viatom/Wellue Data.' : '')
+      + (formats.includes('spo2') ? ' .spo2 in OSCAR: Data › Oximetry Wizard › import a file.' : ''));
   } catch (error) {
     toast(error.message);
   }
@@ -385,7 +387,7 @@ document.getElementById('importInput').addEventListener('change', async (event) 
 ring.addEventListener('file', async ({ detail }) => {
   if (store.isLocked || store.hasRingFile(detail.name)) return;
   try {
-    const { session } = importFile(detail.data, `${detail.name}.dat`);
+    const { session } = importFile(detail.data, `${detail.name}.dat`, ringNameTime(detail.name) ?? Date.now()); // 1.6.6: an unreadable layout keeps the night's start time
     session.deviceName = detail.ringName;
     if (store.hasSameNight(session)) { await store.markRead(detail.name); return; } // 1.6.3: already in History
     await store.add(session);

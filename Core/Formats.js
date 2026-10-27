@@ -3,7 +3,7 @@ import { DEFAULT_SAMPLE_INTERVAL, makeSession, sampleDate, duration } from './Se
 import { report, countDesaturations } from './Report.js';
 
 const INVALID = 0xff;
-export const FORMATS = ['dat', 'bin', 'spo2'];
+export const FORMATS = ['dat', 'bin', 'spo2', 'backup'];
 
 const encodeSample = (s) => [s.spo2 ?? INVALID, s.pulse ?? INVALID, s.motion];
 
@@ -55,7 +55,7 @@ export const Spo2File = {
     w.u16(name.length);
     w.append(name);
     for (const s of session.samples) w.append(encodeSample(s));
-    const code = session.rawData == null ? 0 : { dat: 1, bin: 2 }[session.rawFormat] ?? 0;
+    const code = session.rawData == null ? 0 : { dat: 1, bin: 2, spo2: 3 }[session.rawFormat] ?? 0;
     const raw = code ? session.rawData : new Uint8Array();
     w.u8(code);
     w.u32(raw.length);
@@ -83,7 +83,7 @@ export const Spo2File = {
       const b = r.read(3);
       samples.push(decodeSample(b[0], b[1], b[2], false));
     }
-    const rawFormat = { 1: 'dat', 2: 'bin' }[r.u8()] ?? null;
+    const rawFormat = { 1: 'dat', 2: 'bin', 3: 'spo2' }[r.u8()] ?? null;
     const raw = r.read(r.u32());
     const stored = r.u32();
     if (r.remaining !== 0 || stored !== crc32(bytes.subarray(0, bytes.length - 4))) {
@@ -179,11 +179,80 @@ export const DatFile = {
   },
 };
 
+// 1.6.6: the .spo2 OSCAR opens (Data › Oximetry Wizard), the same layout as the Oxi Converter's
+// (OSCAR cms50_loader readSpoRFile): u16 856 at byte 0 · byte 856 = 1 · "BLE" at 864 (UTF-16)
+// · year month day hour minute second at 1056 (u32 each, local time) · seconds at 1080 · one SpO2, pulse pair a second from 1084.
+// 0x7F / 0xFF = no reading.
+const OSCAR_POS = 856;
+const OSCAR_DATA = 1084;
+const NO_SPO2 = 0x7f;
+const NO_PULSE = 0xff;
+const putU32 = (b, o, v) => { b[o] = v & 255; b[o + 1] = (v >>> 8) & 255; b[o + 2] = (v >>> 16) & 255; b[o + 3] = (v >>> 24) & 255; };
+const getU32 = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
+const isFhs2 = (bytes) => bytes.length >= 4 && MAGIC.every((b, i) => bytes[i] === b);
+
+export const OscarSpo2File = {
+  // each sample fills its whole interval (a 4 s reading = 4 seconds); a missing SpO2 or pulse = no reading
+  encode(session) {
+    const step = Math.round(session.sampleInterval);
+    const seconds = session.samples.length * step;
+    if (!seconds || step < 1) throw new FileError('nothingToExport', 'This session has no data that can be saved as .spo2.');
+    const b = new Uint8Array(OSCAR_DATA + seconds * 2);
+    b[0] = OSCAR_POS & 255;
+    b[1] = OSCAR_POS >> 8;
+    b[OSCAR_POS] = 1;
+    b[864] = 0x42; b[866] = 0x4c; b[868] = 0x45;
+    const d = new Date(session.startDate);
+    [d.getFullYear(), d.getMonth() + 1, d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()].forEach((v, i) => putU32(b, 1056 + i * 4, v));
+    putU32(b, 1080, seconds);
+    let o = OSCAR_DATA;
+    for (const s of session.samples) {
+      const ok = s.spo2 != null && s.pulse != null && s.spo2 <= 100 && s.pulse <= 250;
+      for (let k = 0; k < step; k++) {
+        b[o++] = ok ? s.spo2 : NO_SPO2;
+        b[o++] = ok ? s.pulse : NO_PULSE;
+      }
+    }
+    return b;
+  },
+
+  // reads it back the way OSCAR does; 4 identical seconds in a row everywhere = a 4 s recording again
+  decode(bytes) {
+    if (!bytes.length) throw new FileError('emptyFile', 'The file is empty.');
+    const pos = bytes[0] | (bytes[1] << 8);
+    const data = pos + 228;
+    if (pos < 2 || bytes.length < data) throw new FileError('badMagic', 'This is not a .spo2 file Quiet Harbor or OSCAR can read.');
+    const count = getU32(bytes, pos + 224);
+    if (!count) throw new FileError('nothingToExport', 'This .spo2 file has no readings.');
+    const per = Math.floor((bytes.length - data) / count);
+    if (per !== 2 && per !== 4) throw new FileError('truncated', 'The file is shorter than its header says.');
+    const t = [0, 1, 2, 3, 4, 5].map((i) => getU32(bytes, pos + 200 + i * 4));
+    const startDate = new Date(t[0], t[1] - 1, t[2], t[3], t[4], t[5]).getTime();
+    if (!Number.isFinite(startDate) || t[0] < 2000) throw new FileError('badMagic', 'This .spo2 file has no valid start time.');
+    const secs = [];
+    for (let i = 0; i < count; i++) {
+      const o = data + i * per + (per - 2);
+      const o2 = bytes[o], pr = bytes[o + 1];
+      const gone = (o2 === NO_SPO2 && pr === NO_PULSE) || o2 > 100 || o2 < 10 || pr < 25 || pr > 250;
+      secs.push(gone ? { spo2: null, pulse: null, motion: 0 } : { spo2: o2, pulse: pr, motion: 0 });
+    }
+    const same = (a, b) => a.spo2 === b.spo2 && a.pulse === b.pulse;
+    const fours = secs.length % 4 === 0 && secs.every((s, i) => same(s, secs[i - (i % 4)]));
+    return {
+      startDate,
+      sampleInterval: fours ? 4 : 1,
+      samples: fours ? secs.filter((_, i) => i % 4 === 0) : secs,
+    };
+  },
+};
+
 export function importFile(bytes, fileName, fileDate = Date.now()) {
   const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
   let result;
-  if (ext === 'spo2') {
+  if (ext === 'spo2' && (isFhs2(bytes) || !bytes.length)) {
     result = { session: Spo2File.decode(bytes), warning: null };
+  } else if (ext === 'spo2') {
+    result = { session: makeSession({ ...OscarSpo2File.decode(bytes), rawData: bytes, rawFormat: 'spo2' }), warning: null };
   } else if (ext === 'bin') {
     result = { session: makeSession({ startDate: fileDate, samples: BinFile.decode(bytes), rawData: bytes, rawFormat: 'bin' }), warning: null };
   } else if (ext === 'dat') {
@@ -204,7 +273,11 @@ export function importFile(bytes, fileName, fileDate = Date.now()) {
   return result;
 }
 export function exportFile(session, format) {
-  if (format === 'spo2') return Spo2File.encode(session);
+  if (format === 'backup') return Spo2File.encode(session);
+  if (format === 'spo2') {
+    if (session.rawFormat === 'spo2' && session.rawData) return session.rawData;
+    return OscarSpo2File.encode(session);
+  }
   if (format === 'bin') {
     if (session.rawFormat === 'bin' && session.rawData) return session.rawData;
     if (!session.samples.length) throw new FileError('nothingToExport', 'This session has no data that can be saved as .bin.');
@@ -226,7 +299,8 @@ export function canExport(session, format) {
 export function fileName(session, format, prefix = 'Session') {
   if (format === 'dat') return DatFile.fileName(session);
   const d = new Date(session.startDate);
-  return `${prefix}-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.${format}`;
+  const base = `${prefix}-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+  return format === 'backup' ? `${base}-backup.spo2` : `${base}.${format}`;
 }
 
 function isoLocal(ms) {
