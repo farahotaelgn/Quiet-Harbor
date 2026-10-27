@@ -6,7 +6,7 @@ import { FORMATS, canExport, csv, exportFile, fileName, importFile } from './Cor
 import { zip } from './Core/Zip.js';
 import { BRAND } from './Brand.js';
 
-export const VERSION = '1.6.1';
+export const VERSION = '1.6.2';
 const BLUEFY_URL = 'https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055';
 const DISCLAIMER = `${BRAND.name} is a wellness tool, not a medical device. Discuss your results with a clinician.`;
 
@@ -115,13 +115,16 @@ function deviceView() {
   </section>`;
   if (ring.state === 'ready') {
     const files = ring.ringInfo?.fileNames ?? [];
-    const fresh = files.filter((f) => !store.hasRingFile(f));
+    const empty = files.filter((f) => ring.emptyFiles.has(f) && !store.hasRingFile(f));
+    const fresh = files.filter((f) => !store.hasRingFile(f) && !ring.emptyFiles.has(f));
     html += `<section class="card">
       <h2>Sessions on the ring</h2>
       ${ring.live ? `<div class="row"><span>Battery</span><span>${ring.live.battery} %${ring.live.charging === 'charging' ? ', charging' : ''}</span></div>` : ''}
       <div class="row"><span>On ring</span><span>${ring.ringInfo ? files.length : '…'}</span></div>
-      <div class="row"><span>Already read</span><span>${ring.ringInfo ? files.length - fresh.length : '…'}</span></div>
+      <div class="row"><span>Already read</span><span>${ring.ringInfo ? files.length - fresh.length - empty.length : '…'}</span></div>
       <div class="row"><span>New</span><span>${ring.ringInfo ? fresh.length : '…'}</span></div>
+      ${empty.length ? `<div class="row"><span>Empty on the ring</span><span>${empty.length}</span></div>
+      <p class="note">The ring has no data in ${empty.length === 1 ? 'this night' : 'these nights'} yet. This is usually the night it is recording now. Take the ring off, wait a minute, then tap Refresh.</p>` : ''}
       ${ring.download
         ? `<progress max="${ring.download.total}" value="${ring.download.received}"></progress>
            <p class="note">Downloading ${esc(ring.download.file)}${ring.download.remaining ? ` · ${ring.download.remaining} more` : ''}</p>
@@ -301,7 +304,7 @@ const actions = {
   'connect-all': () => ring.connect(true),
   disconnect: () => ring.disconnect(),
   refresh: () => ring.refresh(),
-  download: () => ring.downloadFiles((ring.ringInfo?.fileNames ?? []).filter((f) => !store.hasRingFile(f))),
+  download: () => ring.downloadFiles((ring.ringInfo?.fileNames ?? []).filter((f) => !store.hasRingFile(f) && !ring.emptyFiles.has(f))),
   'forget-read': async () => {
     if (!confirm('Allow sessions you deleted from History to be downloaded from the ring again?')) return;
     await store.forgetReadFiles();

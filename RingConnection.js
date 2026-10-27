@@ -24,6 +24,7 @@ export class RingConnection extends EventTarget {
     this.wakeLock = null;
     this.wakeLockState = 'off'; // off | on | unsupported
     this.resumeCount = 0;
+    this.emptyFiles = new Set(); // 1.6.2: nights the ring reports as 0 bytes (usually the one it is recording now)
     this.notifyCharacteristic = null;
     this.onNotify = (event) => {
       const v = event.target.value;
@@ -42,11 +43,26 @@ export class RingConnection extends EventTarget {
 
   get isDownloading() { return this.wanted.size > 0; }
 
+  // 1.6.2: names the owner picked from Show all devices, so Connect ring finds them next time
+  static savedNames() {
+    try { const v = JSON.parse(localStorage.getItem('ringNames')); return Array.isArray(v) ? v.filter((n) => typeof n === 'string' && n) : []; } catch { return []; }
+  }
+  static rememberName(name) {
+    if (!name) return;
+    try { localStorage.setItem('ringNames', JSON.stringify([...new Set([name, ...RingConnection.savedNames()])].slice(0, 5))); } catch { /* storage blocked: Show all devices still works */ }
+  }
+  static filters() {
+    const saved = RingConnection.savedNames();
+    const prefixes = [...new Set([...RING.namePatterns, ...saved.map((n) => n.split(/[\s_-]/)[0]).filter((p) => p.length >= 2)])];
+    return [...saved.map((name) => ({ name })), ...prefixes.map((namePrefix) => ({ namePrefix })), { services: [RING.service] }];
+  }
+
   async connect(showAllDevices = false) {
     this.lastError = null;
     const options = showAllDevices
       ? { acceptAllDevices: true, optionalServices: [RING.service] }
-      : { filters: [...RING.namePatterns.map((namePrefix) => ({ namePrefix })), { services: [RING.service] }], optionalServices: [RING.service] };
+      : { filters: RingConnection.filters(), optionalServices: [RING.service] };
+    this.pickedFromAll = showAllDevices;
     try {
       this.device = await navigator.bluetooth.requestDevice(options);
     } catch (error) {
@@ -76,6 +92,7 @@ export class RingConnection extends EventTarget {
       await notify.startNotifications();
       this.state = 'ready';
       this.lastError = null;
+      if (this.pickedFromAll) RingConnection.rememberName(this.device?.name);   // it offers the ring service: remember it
       this.#process(this.client.start());
       this.#updateLiveTimer();
     } catch (error) {
@@ -86,6 +103,7 @@ export class RingConnection extends EventTarget {
 
   disconnect() {
     this.wanted.clear();
+    this.emptyFiles.clear();
     this.#releaseWakeLock();
     if (this.device?.gatt?.connected) this.device.gatt.disconnect();
     else this.#reset('disconnected');
@@ -99,7 +117,16 @@ export class RingConnection extends EventTarget {
     this.#process(this.client.download(names));
   }
 
-  refresh() { this.#process(this.client.requestInfo()); }
+  refresh() {
+    // 1.6.2: nights that were empty are checked again (the ring may have finished recording)
+    if (this.emptyFiles.size && this.state === 'ready') {
+      const again = [...this.emptyFiles];
+      this.emptyFiles.clear();
+      this.downloadFiles(again);
+      return;
+    }
+    this.#process(this.client.requestInfo());
+  }
 
   setLiveEnabled(enabled) {
     this.liveEnabled = enabled;
@@ -123,6 +150,7 @@ export class RingConnection extends EventTarget {
         this.wanted.delete(o.name);
         this.dispatchEvent(new CustomEvent('file', { detail: { name: o.name, data: o.data, ringName: this.name } }));
       } else if (o.type === 'failed') this.lastError = o.message;
+      else if (o.type === 'empty') { this.emptyFiles.add(o.name); this.wanted.delete(o.name); }
     }
     if (resume) {
       this.#keepScreenOn();

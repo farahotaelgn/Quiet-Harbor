@@ -163,7 +163,7 @@ export class RingClient {
         this.fileSize = (p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24)) >>> 0;
         this.fileData = [];
         this.block = 0;
-        if (this.fileSize === 0) return this.#send({ kind: 'fileClose' }, request(COMMAND.fileClose));
+        if (this.fileSize === 0) return [{ type: 'empty', name: current.name }, ...this.#send({ kind: 'fileClose' }, request(COMMAND.fileClose))];
         return [{ type: 'progress', file: current.name, received: 0, total: this.fileSize },
           ...this.#send({ kind: 'fileRead', name: current.name }, request(COMMAND.fileRead, this.block))];
       }
