@@ -20,11 +20,27 @@ export class RingConnection extends EventTarget {
     this.writeChain = Promise.resolve();
     this.timeoutTimer = null;
     this.liveTimer = null;
+    this.wanted = new Set(); // ring files asked for and not received yet; kept across a pause or a dropped link
+    this.wakeLock = null;
+    this.wakeLockState = 'off'; // off | on | unsupported
+    this.resumeCount = 0;
+    this.notifyCharacteristic = null;
+    this.onNotify = (event) => {
+      const v = event.target.value;
+      const bytes = new Uint8Array(v.buffer, v.byteOffset, v.byteLength).slice();
+      this.#log('RX', bytes);
+      this.#process(this.client.receive(bytes));
+    };
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') this.#resumeAfterPause();
+    });
   }
 
   static get isSupported() { return 'bluetooth' in navigator; }
 
   get name() { return this.device?.name ?? 'ring'; }
+
+  get isDownloading() { return this.wanted.size > 0; }
 
   async connect(showAllDevices = false) {
     this.lastError = null;
@@ -38,6 +54,10 @@ export class RingConnection extends EventTarget {
       return;
     }
     this.device.addEventListener('gattserverdisconnected', () => this.#reset('disconnected'));
+    await this.#openGatt();
+  }
+
+  async #openGatt() {
     this.state = 'connecting';
     this.#changed();
     try {
@@ -50,14 +70,12 @@ export class RingConnection extends EventTarget {
       }
       const notify = await service.getCharacteristic(RING.notify);
       this.writeCharacteristic = await service.getCharacteristic(RING.write);
-      notify.addEventListener('characteristicvaluechanged', (event) => {
-        const v = event.target.value;
-        const bytes = new Uint8Array(v.buffer, v.byteOffset, v.byteLength).slice();
-        this.#log('RX', bytes);
-        this.#process(this.client.receive(bytes));
-      });
+      this.notifyCharacteristic?.removeEventListener('characteristicvaluechanged', this.onNotify);
+      this.notifyCharacteristic = notify;
+      notify.addEventListener('characteristicvaluechanged', this.onNotify); // one listener, even after a reconnect
       await notify.startNotifications();
       this.state = 'ready';
+      this.lastError = null;
       this.#process(this.client.start());
       this.#updateLiveTimer();
     } catch (error) {
@@ -67,6 +85,8 @@ export class RingConnection extends EventTarget {
   }
 
   disconnect() {
+    this.wanted.clear();
+    this.#releaseWakeLock();
     if (this.device?.gatt?.connected) this.device.gatt.disconnect();
     else this.#reset('disconnected');
   }
@@ -74,6 +94,8 @@ export class RingConnection extends EventTarget {
   downloadFiles(names) {
     if (this.state !== 'ready' || !names.length) return;
     this.downloadedCount = 0;
+    for (const n of names) this.wanted.add(n);
+    this.#keepScreenOn();
     this.#process(this.client.download(names));
   }
 
@@ -85,17 +107,39 @@ export class RingConnection extends EventTarget {
   }
 
   #process(outputs) {
+    let resume = null;
     for (const o of outputs) {
       if (o.type === 'send') this.#write(o.data);
-      else if (o.type === 'info') this.ringInfo = o.info;
+      else if (o.type === 'info') {
+        this.ringInfo = o.info;
+        for (const n of this.wanted) if (!o.info.fileNames.includes(n)) this.wanted.delete(n); // gone from the ring
+        const left = [...this.wanted].filter((n) => n !== this.client.downloadingFile);
+        if (left.length) resume = left; // picks up where it stopped
+      }
       else if (o.type === 'live') this.live = o.reading;
       else if (o.type === 'progress') this.download = { file: o.file, received: o.received, total: o.total, remaining: this.client.queuedFileCount };
       else if (o.type === 'file') {
         this.downloadedCount++;
+        this.wanted.delete(o.name);
         this.dispatchEvent(new CustomEvent('file', { detail: { name: o.name, data: o.data, ringName: this.name } }));
       } else if (o.type === 'failed') this.lastError = o.message;
     }
-    if (!this.client.downloadingFile && !this.client.queuedFileCount) this.download = null;
+    if (resume) {
+      this.#keepScreenOn();
+      this.#process(this.client.download(resume));
+      return;
+    }
+    if (!this.client.downloadingFile && !this.client.queuedFileCount) {
+      this.download = null;
+      if (!this.client.isBusy && this.wanted.size && this.state === 'ready' && document.visibilityState === 'visible') {
+        // a night timed out while the link was up: it stays wanted and is tried again once
+        const retry = [...this.wanted].filter((n) => !this.retried?.has(n));
+        this.retried = new Set([...(this.retried ?? []), ...retry]);
+        if (retry.length) { this.#process(this.client.download(retry)); return; }
+        this.wanted.clear();
+      }
+      if (!this.wanted.size) { this.retried = null; this.#releaseWakeLock(); }
+    }
     clearTimeout(this.timeoutTimer);
     if (this.client.isBusy) this.timeoutTimer = setTimeout(() => this.#process(this.client.timeout()), RESPONSE_TIMEOUT);
     this.#changed();
@@ -120,6 +164,43 @@ export class RingConnection extends EventTarget {
     if (this.liveEnabled && this.state === 'ready') {
       this.liveTimer = setInterval(() => this.#process(this.client.pollLive()), LIVE_POLL_INTERVAL);
     }
+  }
+
+  async #resumeAfterPause() {
+    if (!this.wanted.size) return;
+    this.#keepScreenOn();
+    this.resumeCount++;
+    this.retried = null;
+    if (this.state === 'ready' && this.device?.gatt?.connected) {
+      clearTimeout(this.timeoutTimer);
+      this.lastError = null;
+      this.client = new RingClient(); // drop half-read packets from before the pause
+      this.#process(this.client.start()); // ask the ring again; the info reply restarts the wanted nights
+    } else if (this.device && this.state === 'disconnected') {
+      await this.#openGatt(); // same ring, no chooser
+      if (this.state !== 'ready') this.lastError = 'The ring link was lost while you were away. Tap Connect ring to carry on; the download continues on its own.';
+      this.#changed();
+    }
+  }
+
+  async #keepScreenOn() {
+    if (this.wakeLock) return;
+    if (!navigator.wakeLock?.request) { this.wakeLockState = 'unsupported'; return; }
+    try {
+      this.wakeLock = await navigator.wakeLock.request('screen');
+      this.wakeLockState = 'on';
+      this.wakeLock.addEventListener('release', () => { this.wakeLock = null; if (this.wakeLockState === 'on') this.wakeLockState = 'off'; this.#changed(); });
+    } catch {
+      this.wakeLockState = 'unsupported';
+    }
+    this.#changed();
+  }
+
+  #releaseWakeLock() {
+    const lock = this.wakeLock;
+    this.wakeLock = null;
+    if (this.wakeLockState === 'on') this.wakeLockState = 'off';
+    lock?.release().catch(() => {});
   }
 
   #reset(state) {

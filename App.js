@@ -6,7 +6,7 @@ import { FORMATS, canExport, csv, exportFile, fileName, importFile } from './Cor
 import { zip } from './Core/Zip.js';
 import { BRAND } from './Brand.js';
 
-export const VERSION = '1.6.0';
+export const VERSION = '1.6.1';
 const BLUEFY_URL = 'https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055';
 const DISCLAIMER = `${BRAND.name} is a wellness tool, not a medical device. Discuss your results with a clinician.`;
 
@@ -111,6 +111,7 @@ function deviceView() {
       ? `<button data-action="connect">Connect ring</button><button class="secondary" data-action="connect-all">Show all devices</button>`
       : `<button class="danger" data-action="disconnect">Disconnect</button>`}</div>
     ${ring.state === 'disconnected' ? '<p class="note">Wear the ring so it wakes up, then tap Connect and choose it in the list.</p>' : ''}
+    ${ring.isDownloading && ring.state === 'disconnected' ? `<p class="note">${ring.wanted.size} night${ring.wanted.size === 1 ? '' : 's'} still to download. They carry on as soon as the ring is connected.</p>` : ''}
   </section>`;
   if (ring.state === 'ready') {
     const files = ring.ringInfo?.fileNames ?? [];
@@ -123,13 +124,15 @@ function deviceView() {
       <div class="row"><span>New</span><span>${ring.ringInfo ? fresh.length : '…'}</span></div>
       ${ring.download
         ? `<progress max="${ring.download.total}" value="${ring.download.received}"></progress>
-           <p class="note">Downloading ${esc(ring.download.file)}${ring.download.remaining ? ` · ${ring.download.remaining} more` : ''}</p>`
+           <p class="note">Downloading ${esc(ring.download.file)}${ring.download.remaining ? ` · ${ring.download.remaining} more` : ''}</p>
+           ${ring.wakeLockState === 'unsupported' ? '<p class="error">Keep the screen on until it finishes. This browser cannot keep it awake.</p>' : ''}`
         : `<div class="buttons">
              <button data-action="download" ${fresh.length ? '' : 'disabled'}>Download ${fresh.length} new session${fresh.length === 1 ? '' : 's'}</button>
              <button class="secondary" data-action="refresh">Refresh</button>
            </div>
            ${store.readFiles.size ? '<button class="secondary" data-action="forget-read">Allow deleted sessions to download again</button>' : ''}
            ${ring.downloadedCount ? `<p class="note">${ring.downloadedCount} downloaded to History.</p>` : ''}`}
+      <p class="note">Switching apps pauses the download. It continues when you come back.</p>
     </section>`;
   }
   return html;
@@ -399,9 +402,19 @@ view.addEventListener('change', (event) => {
   try { localStorage.setItem('exportFormats', JSON.stringify([...ui.formats])); } catch { /* not essential */ }
 });
 let hiddenAt = null;
+let lockWhenDownloaded = false;
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) hiddenAt = Date.now();
-  else if (hiddenAt && Date.now() - hiddenAt > AUTO_LOCK_AFTER && !store.isLocked) lock();
+  else if (hiddenAt && Date.now() - hiddenAt > AUTO_LOCK_AFTER && !store.isLocked) {
+    if (ring.isDownloading) lockWhenDownloaded = true; // locking now would drop the nights still coming in
+    else lock();
+  }
+});
+ring.addEventListener('change', () => {
+  if (lockWhenDownloaded && !ring.isDownloading && !store.isLocked) {
+    lockWhenDownloaded = false;
+    setTimeout(lock, 1500); // let the last night finish saving first
+  }
 });
 document.getElementById('lockButton').addEventListener('click', () => lock());
 
