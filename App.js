@@ -6,7 +6,7 @@ import { FORMATS, canExport, csv, exportFile, fileName, importFile } from './Cor
 import { zip } from './Core/Zip.js';
 import { BRAND } from './Brand.js';
 
-export const VERSION = '1.6.6';
+export const VERSION = '1.6.7';
 const BLUEFY_URL = 'https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055';
 const DISCLAIMER = `${BRAND.name} is a wellness tool, not a medical device. Discuss your results with a clinician.`;
 
@@ -29,7 +29,7 @@ function savedFormats() {
   return new Set(['dat']);
 }
 
-const ui = { tab: 'device', sessionId: null, formats: savedFormats(), unlocking: false, lockError: null, ready: false };
+const ui = { tab: 'device', sessionId: null, formats: savedFormats(), unlocking: false, lockError: null, ready: false, selecting: false, selected: new Set(), newKind: 'password', changing: false }; // 1.6.7: hold a night to select · PIN · remember
 const view = document.getElementById('view');
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -186,12 +186,34 @@ function liveView() {
     <pre class="log">${esc(ring.packetLog.join('\n'))}</pre></details></section>`;
 }
 
+// 1.6.7: the nights ticked in History (only ones that still exist)
+function selectedSessions() {
+  return store.sessions.filter((s) => ui.selected.has(s.id));
+}
+
+function selectionBar() {
+  const n = selectedSessions().length, all = n === store.sessions.length;
+  return `<section class="card select-bar">
+    <div class="row"><b>${n} selected</b>
+      <button class="secondary small" data-action="${all ? 'select-none' : 'select-all'}">${all ? 'Select none' : 'Select all'}</button></div>
+    ${formatPicker()}
+    <div class="buttons">
+      <button data-action="export-selected" ${n ? '' : 'disabled'}>Download ${n} selected</button>
+      <button class="danger" data-action="delete-selected" ${n ? '' : 'disabled'}>Delete ${n} selected</button>
+    </div>
+    <button class="secondary" data-action="select-done">Done</button>
+  </section>`;
+}
+
 function historyView() {
-  const items = store.sessions.map((s) => `<button class="item" data-action="open" data-id="${esc(s.id)}">
+  const items = store.sessions.map((s) => `<button class="item${ui.selecting && ui.selected.has(s.id) ? ' picked' : ''}" data-action="${ui.selecting ? 'toggle-select' : 'open'}" data-id="${esc(s.id)}" data-hold="1">
+      ${ui.selecting ? `<span class="tick" aria-hidden="true">${ui.selected.has(s.id) ? '✓' : ''}</span>` : ''}
       <span class="grow">${dateTime(s.startDate)}
         <small>${isRawOnly(s) ? 'Raw file only' : hms(duration(s))}${s.deviceName ? ` · ${esc(s.deviceName)}` : ''}</small></span>
-      ${s.rawFormat ? `<span class="badge">.${s.rawFormat}</span>` : ''}<span class="chevron">›</span>
+      ${s.rawFormat ? `<span class="badge">.${s.rawFormat}</span>` : ''}${ui.selecting ? '' : '<span class="chevron">›</span>'}
     </button>`).join('');
+  if (ui.selecting) return `${selectionBar()}
+  <section class="card list">${items}</section>`;
   return `<section class="card">
     <h2>History</h2>
     <div class="buttons">
@@ -206,7 +228,9 @@ function historyView() {
     <button class="secondary" data-action="export-all" ${store.sessions.length ? '' : 'disabled'}>Download ${store.sessions.length} session${store.sessions.length === 1 ? '' : 's'} in the chosen formats</button>
     <p class="note">Each session is its own file in each format.</p>
   </section>
-  <section class="card list">${items || '<p class="note" style="padding:12px 16px">No sessions yet. Download them from the ring, import a .dat, .bin or .spo2 file, or add a demo session.</p>'}</section>`;
+  ${store.sessions.length ? '<p class="note hold-hint">Hold a session to select several to download or delete.</p>' : ''}
+  <section class="card list">${items || '<p class="note" style="padding:12px 16px">No sessions yet. Download them from the ring, import a .dat, .bin or .spo2 file, or add a demo session.</p>'}</section>
+  ${securityCard()}`;
 }
 
 function sessionView(s) {
@@ -243,30 +267,69 @@ function sessionView(s) {
   </section>`;
 }
 
+// 1.6.7: a password or a 4–6 digit PIN, and "Remember on this iPhone"
+const isPinText = (t) => /^\d{4,6}$/.test(t);
+function secretFields(kind, autocomplete) {
+  const pin = kind === 'pin';
+  const attrs = pin ? 'inputmode="numeric" pattern="[0-9]*" maxlength="6"' : '';
+  return `<input type="password" name="password" autocomplete="${autocomplete}" ${attrs} placeholder="${pin ? 'PIN (4–6 digits)' : 'Password (at least 6 characters)'}" required>
+      <input type="password" name="confirm" autocomplete="${autocomplete}" ${attrs} placeholder="${pin ? 'Repeat PIN' : 'Repeat password'}" required>
+      <button type="button" class="secondary small" data-action="switch-kind">${pin ? 'Use a password instead' : 'Use a short PIN instead'}</button>`;
+}
+const rememberBox = () => `<label class="check"><input type="checkbox" name="remember" checked> Remember on this iPhone (opens without typing)</label>`;
+
 function lockView() {
   if (!store.hasPassword) {
     return `<form class="card lock" data-form="create">
-      <h2>Create a password</h2>
+      <h2>Create a ${ui.newKind === 'pin' ? 'PIN' : 'password'}</h2>
       <p class="note">It protects this page and encrypts your saved sessions on this phone.</p>
-      <input type="password" name="password" autocomplete="new-password" placeholder="Password (at least 6 characters)" minlength="6" required>
-      <input type="password" name="confirm" autocomplete="new-password" placeholder="Repeat password" required>
+      ${secretFields(ui.newKind, 'new-password')}
+      ${rememberBox()}
       ${ui.lockError ? `<p class="error">${esc(ui.lockError)}</p>` : ''}
-      <button type="submit" ${ui.unlocking ? 'disabled' : ''}>${ui.unlocking ? 'Setting up…' : 'Save password'}</button>
-      <p class="note">There is no way to recover a forgotten password. The only option is to erase the saved sessions and start again.</p>
+      <button type="submit" ${ui.unlocking ? 'disabled' : ''}>${ui.unlocking ? 'Setting up…' : `Save ${ui.newKind === 'pin' ? 'PIN' : 'password'}`}</button>
+      <p class="note">There is no way to recover a forgotten password or PIN. The only option is to erase the saved sessions and start again.</p>
     </form>`;
   }
+  const pin = store.isPin;
   return `<form class="card lock" data-form="unlock">
     <h2>Locked</h2>
-    <input type="password" name="password" autocomplete="current-password" placeholder="Password" required autofocus>
+    <input type="password" name="password" autocomplete="current-password" ${pin ? 'inputmode="numeric" pattern="[0-9]*" maxlength="6"' : ''} placeholder="${pin ? 'PIN' : 'Password'}" required autofocus>
+    ${rememberBox()}
     ${ui.lockError ? `<p class="error">${esc(ui.lockError)}</p>` : ''}
     <button type="submit" ${ui.unlocking ? 'disabled' : ''}>${ui.unlocking ? 'Unlocking…' : 'Unlock'}</button>
-    <button type="button" class="danger" data-action="erase-all">Forgot password? Erase everything</button>
+    <button type="button" class="danger" data-action="erase-all">Forgot ${pin ? 'PIN' : 'password'}? Erase everything</button>
   </form>`;
+}
+
+// 1.6.7: at the end of History
+function securityCard() {
+  const what = store.isPin ? 'PIN' : 'password';
+  return `<section class="card">
+    <h2>Lock</h2>
+    <p class="note">${store.remembered
+      ? `This iPhone is remembered: Quiet Harbor opens without typing. The lock button at the top forgets it, and the ${what} is asked once again.`
+      : `Quiet Harbor asks for your ${what} when it opens and after 5 minutes away.`}</p>
+    <div class="buttons">
+      ${store.remembered
+        ? '<button class="secondary" data-action="forget-here">Forget this iPhone</button>'
+        : '<button class="secondary" data-action="remember-here">Remember on this iPhone</button>'}
+      <button class="secondary" data-action="change-secret">${ui.changing ? 'Keep the current one' : 'Change password or PIN'}</button>
+    </div>
+    ${ui.changing ? `<form data-form="change" class="lock">
+      ${secretFields(ui.newKind, 'new-password')}
+      ${ui.lockError ? `<p class="error">${esc(ui.lockError)}</p>` : ''}
+      <button type="submit" ${ui.unlocking ? 'disabled' : ''}>${ui.unlocking ? 'Saving…' : `Save new ${ui.newKind === 'pin' ? 'PIN' : 'password'}`}</button>
+    </form>` : ''}
+  </section>`;
 }
 
 function lock() {
   ring.disconnect();
   ui.sessionId = null;
+  ui.selecting = false;
+  ui.selected = new Set();
+  ui.changing = false;
+  store.forgetHere(); // 1.6.7: Lock means the password or PIN is needed again
   store.lock();
 }
 
@@ -348,6 +411,32 @@ const actions = {
   open: (el) => { ui.sessionId = el.dataset.id; render(); window.scrollTo(0, 0); },
   back: () => { ui.sessionId = null; render(); },
   'export-session': () => exportSessions([store.find(ui.sessionId)]),
+  // 1.6.7: PIN and remember on this iPhone
+  'switch-kind': () => { ui.newKind = ui.newKind === 'pin' ? 'password' : 'pin'; ui.lockError = null; render(); },
+  'remember-here': async () => {
+    if (!(await store.rememberHere())) toast("This browser can't remember the key. The password or PIN is still needed.");
+    render();
+  },
+  'forget-here': async () => { await store.forgetHere(); render(); },
+  'change-secret': () => { ui.changing = !ui.changing; ui.newKind = store.isPin ? 'pin' : 'password'; ui.lockError = null; render(); },
+  // 1.6.7: selecting several nights
+  'toggle-select': (el) => {
+    if (ui.selected.has(el.dataset.id)) ui.selected.delete(el.dataset.id);
+    else ui.selected.add(el.dataset.id);
+    render();
+  },
+  'select-all': () => { ui.selected = new Set(store.sessions.map((s) => s.id)); render(); },
+  'select-none': () => { ui.selected = new Set(); render(); },
+  'select-done': () => endSelecting(),
+  'export-selected': () => exportSessions(selectedSessions()),
+  'delete-selected': async () => {
+    const chosen = selectedSessions();
+    if (!chosen.length) return;
+    if (!confirm(`Delete ${chosen.length} session${chosen.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    for (const s of chosen) await store.remove(s.id);
+    toast(`${chosen.length} session${chosen.length === 1 ? '' : 's'} deleted.`);
+    endSelecting();
+  },
   delete: async () => {
     if (!confirm('Delete this session from this phone?')) return;
     await store.remove(ui.sessionId);
@@ -356,7 +445,42 @@ const actions = {
   },
 };
 
+function endSelecting() {
+  ui.selecting = false;
+  ui.selected = new Set();
+  render();
+}
+
+// 1.6.7: hold a night (about half a second) to start selecting, with that night ticked
+const HOLD_MS = 500;
+let hold = null;
+let holdFired = false;
+view.addEventListener('pointerdown', (event) => {
+  const el = event.target.closest('[data-hold]');
+  if (!el || ui.selecting || (event.pointerType === 'mouse' && event.button !== 0)) return;
+  const id = el.dataset.id, x = event.clientX, y = event.clientY;
+  clearTimeout(hold?.timer);
+  hold = { x, y, timer: setTimeout(() => {
+    hold = null;
+    holdFired = true;
+    ui.selecting = true;
+    ui.selected = new Set([id]);
+    navigator.vibrate?.(15);
+    render();
+  }, HOLD_MS) };
+});
+const cancelHold = () => { clearTimeout(hold?.timer); hold = null; };
+view.addEventListener('pointermove', (event) => {
+  if (hold && Math.hypot(event.clientX - hold.x, event.clientY - hold.y) > 10) cancelHold();
+});
+['pointerup', 'pointercancel', 'pointerleave'].forEach((type) => view.addEventListener(type, () => {
+  cancelHold();
+  if (holdFired) setTimeout(() => { holdFired = false; }, 400); // iOS may send no click after a long hold
+}));
+view.addEventListener('contextmenu', (event) => { if (event.target.closest('[data-hold]')) event.preventDefault(); });
+
 view.addEventListener('click', (event) => {
+  if (holdFired) { holdFired = false; event.preventDefault(); return; } // the click that ends a hold doesn't open or untick
   const el = event.target.closest('[data-action]');
   if (el && !el.disabled) actions[el.dataset.action]?.(el);
 });
@@ -365,6 +489,7 @@ document.querySelector('.tabs').addEventListener('click', (event) => {
   const tab = event.target.closest('[data-tab]')?.dataset.tab;
   if (!tab) return;
   if (tab === ui.tab && tab === 'history') ui.sessionId = null;
+  if (tab !== 'history') { ui.selecting = false; ui.selected = new Set(); } // 1.6.7
   ui.tab = tab;
   ring.setLiveEnabled(tab === 'live');
   render();
@@ -405,18 +530,27 @@ document.getElementById('version').textContent = `v${VERSION}`;
 view.addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.target;
+  if (!['create', 'unlock', 'change'].includes(form.dataset.form)) return;
   const password = form.password.value;
+  const remember = form.remember?.checked ?? false;
+  const kind = ui.newKind;
+  const word = kind === 'pin' ? 'PIN' : 'password';
   ui.lockError = null;
-  if (form.dataset.form === 'create') {
-    if (password.length < 6) ui.lockError = 'Use at least 6 characters.';
-    else if (password !== form.confirm.value) ui.lockError = 'The two passwords do not match.';
+  if (form.dataset.form !== 'unlock') {
+    if (kind === 'pin' && !isPinText(password)) ui.lockError = 'Use 4 to 6 digits.';
+    else if (kind !== 'pin' && password.length < 6) ui.lockError = 'Use at least 6 characters.';
+    else if (password !== form.confirm.value) ui.lockError = `The two ${word}s do not match.`;
     if (ui.lockError) return render();
   }
   ui.unlocking = true;
   render();
+  let done = false;
   try {
-    if (form.dataset.form === 'create') await store.createPassword(password);
-    else if (!(await store.unlock(password))) ui.lockError = 'Wrong password.';
+    if (form.dataset.form === 'create') { await store.createPassword(password, kind); done = true; }
+    else if (form.dataset.form === 'change') { await store.changePassword(password, kind); done = true; ui.changing = false; toast(`New ${word} saved.`); }
+    else if (await store.unlock(password)) done = true;
+    else ui.lockError = `Wrong ${store.isPin ? 'PIN' : 'password'}.`;
+    if (done && remember && !(await store.rememberHere())) toast("This browser can't remember the key. The password or PIN is still needed.");
   } catch (error) {
     ui.lockError = error.message;
   }
@@ -435,7 +569,7 @@ let hiddenAt = null;
 let lockWhenDownloaded = false;
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) hiddenAt = Date.now();
-  else if (hiddenAt && Date.now() - hiddenAt > AUTO_LOCK_AFTER && !store.isLocked) {
+  else if (hiddenAt && Date.now() - hiddenAt > AUTO_LOCK_AFTER && !store.isLocked && !store.remembered) { // 1.6.7: a remembered iPhone stays open
     if (ring.isDownloading) lockWhenDownloaded = true; // locking now would drop the nights still coming in
     else lock();
   }

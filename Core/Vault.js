@@ -41,3 +41,12 @@ export async function openVault(vault, password) {
     return null;
   }
 }
+
+// 1.6.7: is this saved key still the vault's key (the password may have changed since)
+export async function checkKey(vault, key) {
+  try {
+    return (await unseal(key, vault.check)) === CHECK;
+  } catch {
+    return false;
+  }
+}

@@ -135,3 +135,15 @@ input[type="password"] {
   button:active { transform: scale(.97); }
 }
 .note p, .error p { margin: 6px 0; }
+
+/* 1.6.7: hold a night to select several */
+.item[data-hold] { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; touch-action: manipulation; }
+.item.picked { background: color-mix(in srgb, var(--teal) 12%, transparent); }
+.tick { width: 24px; height: 24px; flex: none; border-radius: 50%; border: 2px solid var(--line); display: grid; place-items: center; font-weight: 700; color: #fff; }
+.item.picked .tick { background: var(--teal); border-color: var(--teal); }
+.select-bar { position: sticky; top: 8px; z-index: 2; }
+.select-bar .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.select-bar > * + * { margin-top: 10px; }
+button.small { min-height: 36px; padding: 6px 12px; }
+.hold-hint { margin: 0 4px; }
+.select-bar .row > button { color: var(--teal); }

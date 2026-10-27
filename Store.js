@@ -1,5 +1,5 @@
 import { BRAND } from './Brand.js';
-import { createVault, openVault, seal, unseal } from './Core/Vault.js';
+import { createVault, openVault, seal, unseal, checkKey } from './Core/Vault.js';
 import { duration } from './Core/Session.js';
 
 const DB_NAME = BRAND.storageName;
@@ -36,22 +36,82 @@ export class SessionStore extends EventTarget {
     this.vault = null;
     this.sessions = [];
     this.readFiles = new Set(); // ring files already downloaded, kept even if their session is deleted
+    this.remembered = false; // 1.6.7: this phone keeps the key, so the page opens without typing
   }
 
   get isLocked() { return this.key === null; }
   get hasPassword() { return this.vault !== null; }
+  get isPin() { return this.vault?.kind === 'pin'; } // 1.6.7
   async open() {
     try {
       this.db = await openDatabase();
       this.vault = (await run(this.db, META, 'readonly', (s) => s.get('vault'))) ?? null;
       await navigator.storage?.persist?.();
+      await this.#openRemembered();
     } catch {
       this.db = null; // blocked storage: sessions live in memory only
     }
   }
 
-  async createPassword(password) {
+  // 1.6.7: the key kept on this phone (a CryptoKey that can't be read out, stored in IndexedDB)
+  async #openRemembered() {
+    if (!this.vault) return;
+    const key = await run(this.db, META, 'readonly', (s) => s.get('deviceKey')).catch(() => null);
+    if (!key) return;
+    if (!(await checkKey(this.vault, key))) { await this.forgetHere(); return; } // the password changed elsewhere
+    this.key = key;
+    this.remembered = true;
+    await this.#load();
+  }
+
+  async rememberHere() {
+    if (!this.db || !this.key) return false;
+    try {
+      await run(this.db, META, 'readwrite', (s) => s.put(this.key, 'deviceKey'));
+      this.remembered = true;
+    } catch {
+      this.remembered = false; // this browser can't keep a key: the password stays as before
+    }
+    this.#changed();
+    return this.remembered;
+  }
+
+  async forgetHere() {
+    this.remembered = false;
+    if (this.db) await run(this.db, META, 'readwrite', (s) => s.delete('deviceKey')).catch(() => {});
+    this.#changed();
+  }
+
+  // 1.6.7: new password or PIN; every session is sealed again and written in one go with the new vault
+  async changePassword(password, kind = 'password') {
+    if (!this.key) throw new Error('Unlock first.');
     const { vault, key } = await createVault(password);
+    vault.kind = kind;
+    const sealed = [];
+    for (const session of this.sessions) sealed.push({ id: session.id, sealed: await seal(key, session) });
+    const read = await seal(key, [...this.readFiles]);
+    if (this.db) {
+      await new Promise((resolve, reject) => {
+        const tx = this.db.transaction([SESSIONS, META], 'readwrite');
+        const ss = tx.objectStore(SESSIONS), meta = tx.objectStore(META);
+        ss.clear();
+        for (const record of sealed) ss.put(record);
+        meta.put(vault, 'vault');
+        meta.put(read, 'readFiles');
+        if (this.remembered) meta.put(key, 'deviceKey');
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error ?? new Error('Saving the new password failed. The old one still works.'));
+      });
+    }
+    this.vault = vault;
+    this.key = key;
+    this.#changed();
+  }
+
+  async createPassword(password, kind = 'password') {
+    const { vault, key } = await createVault(password);
+    vault.kind = kind; // 1.6.7: 'pin' shows the number pad
     this.vault = vault;
     this.key = key;
     if (this.db) await run(this.db, META, 'readwrite', (s) => s.put(vault, 'vault'));
@@ -72,6 +132,7 @@ export class SessionStore extends EventTarget {
 
   lock() {
     this.key = null;
+    this.remembered = false;
     this.sessions = [];
     this.readFiles = new Set();
     this.#changed();
