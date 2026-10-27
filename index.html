@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101c26">
+  <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+  <meta name="referrer" content="no-referrer">
+  <title>Quiet Harbor</title>
+  <meta name="description" content="Quiet Harbor">
+  <link rel="icon" href="Icon.png">
+  <link rel="apple-touch-icon" href="Icon.png">
+  <link rel="stylesheet" href="Styles.css">
+</head>
+<body>
+  <header class="bar">
+    <img src="Icon.png" alt="" class="logo">
+    <h1 id="brandName">Quiet Harbor</h1>
+    <span class="version" id="version"></span>
+    <button type="button" class="lock-button" id="lockButton" aria-label="Lock">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+    </button>
+  </header>
+  <main id="view" aria-live="polite"></main>
+  <nav class="tabs" aria-label="Sections">
+    <button type="button" data-tab="device">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/></svg>
+      <span>Device</span>
+    </button>
+    <button type="button" data-tab="live">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="2,12 7,12 9.5,6 13,18 15.5,10 17,12 22,12"/></svg>
+      <span>Live</span>
+    </button>
+    <button type="button" data-tab="history">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12,7 12,12 15.5,14"/></svg>
+      <span>History</span>
+    </button>
+  </nav>
+  <input type="file" id="importInput" accept=".dat,.bin,.spo2,application/octet-stream" multiple hidden>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script type="module" src="App.js"></script>
+</body>
+</html>
